@@ -72,14 +72,20 @@ ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519_bliss -N ''
 
 ## 失败配方汇总
 
-| 配置 | 症状 |
-|---|---|
-| UEFI/OVMF | `BdsDxe: Failed to load BootO003 / Not Found` |
-| Q35 + virtio-scsi | init 早期卡 |
-| virtio-vga | "Detecting Android-x86" 后黑屏 |
-| 不加 cpu hidden=1 | 卡在 "Have A Truly Blissful Experience" |
-| 4+ vCPU | 偶发 SMP 启动卡 |
-| 只加 nomodeset 不加 xforcevesa | 部分情况仍卡 |
+| 配置/行为 | 症状 | 解决 |
+|---|---|---|
+| UEFI/OVMF | `BdsDxe: Failed to load BootO003 / Not Found` | 改 SeaBIOS |
+| Q35 + virtio-scsi | init 早期卡 | 改 i440fx + SATA |
+| virtio-vga | "Detecting Android-x86" 后黑屏 | 改 vmware SVGA |
+| 不加 `cpu host,hidden=1` | 卡在 "Have A Truly Blissful Experience" | 隐藏 hypervisor flag |
+| 4+ vCPU | 偶发 SMP 启动卡 | 降到 2 |
+| 只加 `nomodeset` 不加 `xforcevesa` | 部分情况仍卡 | 两个一起 |
+| 手动改 `/system/build.prop` 加 override | init 起不来 | 只用 PVE SMBIOS + user build 层面改，ro.* override 无效且有副作用 |
+| uiautomator dump 切屏扰 VNC | force-stop + am start + dump 反复把 App 切到前台 | 改走 Chrome CDP + Runtime.evaluate 读 DOM |
+| CDP Page.reload 后立即 evaluate 拿空 DOM | CMHK SPA 加载 AJAX 用量数据需 30-40s | marker_js 轮询，每 3s 试一次最多 90s |
+| CT App 升级后首页无流量字段 | App 13.2 首页改成广告聚合 | 暂禁用 CT，待走 e.189.cn 网页路线 |
+| CMCC cookie session 30 分钟就被踢 | shop.10086.cn 风控严格 | 接入 dmit-lax SMS bot 每日 19:00 CST 流量查询作备用源 |
+| Android 不响应 ACPI shutdown → PVE 锁死 | PVE 点 Shutdown 等超时 3 分钟 → 下次操作全部卡 lock | 用 **Stop** 不用 Shutdown；或 `scripts/03-bliss-rescue.sh` 救火 |
 
 ## 用途规划
 
@@ -93,9 +99,57 @@ ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519_bliss -N ''
 
 四个运营商 App 都需要 SMS 验证码（手机号注册），需要把"接收码的真机"放手边手动转码。
 
-## 用量查询脚本（已实施）
+## Chrome Remote Debugging (CDP) — 推荐数据采集方案
 
-四家运营商通过 ADB + uiautomator dump 一条命令查：
+Bliss Chrome 默认开启了 Chrome DevTools Protocol（通过 Android abstract socket）。
+从任意宿主（4090 / mac）通过 ADB forward 即可接入：
+
+```bash
+adb -s 192.168.100.198:5555 forward tcp:9222 localabstract:chrome_devtools_remote
+
+# 现在 localhost:9222 就是完整 CDP endpoint
+curl http://localhost:9222/json         # 列出所有 tab（每个 am start 都会新建）
+curl http://localhost:9222/json/version # Chrome 版本信息
+```
+
+用 Python websockets 连 tab 的 `webSocketDebuggerUrl`，直接：
+- `Runtime.evaluate` — 读 `document.body.innerText`，绕过所有 uiautomator 切屏
+- `Page.reload` — 刷新页面触发新 AJAX
+- `Network.getAllCookies` — 导出登录态 cookie（包括 httpOnly，可迁移到 Python requests）
+- `Target.createTarget` — 创建新 tab 打开任意 URL
+
+**对比 uiautomator dump**：
+
+| 维度 | uiautomator dump | CDP + DOM |
+|---|---|---|
+| 干扰 VNC | ❌ 每次 am start 切屏 | ✅ 纯后台读 DOM |
+| Android emulator detection | ❌ App 拒运行 | ✅ 网页无检测 |
+| Session 过期检测 | ⚠️ 需额外 grep | ✅ DOM 变登录页自动识别 |
+| 速度 | 慢（am start + render 切回） | 快 5 倍 |
+
+生产部署参见 [ywdking2/invest-review](https://github.com/ywdking2/invest-review) 的 `backend/api/sim_monitor.py`。
+
+### Chrome tab 维护
+
+需要保持 3 个 tab 登录态：
+- `https://fi.google.com/account`
+- `https://www.hk.chinamobile.com/tc/home/my-zone/menu/usage-query`
+- `https://shop.10086.cn/i/`
+
+Bliss Chrome profile 持久化 cookie，VM 重启后自动保留。Session 过期时 DOM 变回登录页，前端标记 `error: session_expired`，在 VNC 里打开对应 tab 重扫码即可。
+
+### 锁横屏（防 App 强制 portrait 撑出竖屏）
+
+```bash
+adb shell cmd window set-ignore-orientation-request true
+adb shell cmd window user-rotation lock 0
+```
+
+（重启后失效，sim_monitor poller 启动时自动重做）
+
+## 用量查询 bash 脚本（早期手动方案）
+
+四家运营商通过 ADB + uiautomator dump 一条命令查（⚠️ 已被 invest-review CDP 路线取代，保留作为本地测试备份）：
 
 ```bash
 ./scripts/bliss-usage.sh         # 汇总 4 家
@@ -105,32 +159,6 @@ ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519_bliss -N ''
 ./scripts/ct-usage.sh            # 中国电信 App com.ct.client
 ```
 
-**先决条件**：Bliss VM 内 Chrome 已登录各家网页（CMHK/CMCC/Fi）、中国电信 App 已登录。登录 session 存 Chrome cookie 里，不会过期（除非运营商主动踢 session）。
-
-输出示例：
-
-```
-Google Fi
-  数据用量: 0 GB
-  Alert 阈值: 3 GB
-  Cycle ends 27 days
-  当前账单: $88.77
-
-CMHK (中國移動香港)
-  總用量: 15.15/100.00GB  (餘: 84.85GB)
-  本號已用: 6.89 GB
-
-中国移动
-  套餐: 全家享套餐（全国版）199档
-  流量: 已用 44.11 GB / 155.40 GB  (剩 111.29 GB, 72%)
-  通话: 剩 382 / 600 分钟 (64%)
-
-中国电信
-  剩余流量: 178.89GB
-  剩余语音: 2097分钟
-  宽带速率: 2000Mbps
-```
-
 ### 为什么不走 App 伪装 emulator detection
 
 尝试过改 build.prop + PVE SMBIOS 伪装成 Samsung 设备。结论：
@@ -138,9 +166,9 @@ CMHK (中國移動香港)
 - **能改的**：DMI (sys_vendor/product_name 通过 PVE `--smbios1 manufacturer=... base64=1`)、build.prop 部分字段
 - **改坏了**：直接 append `ro.hardware` 等 override 到 `/system/build.prop` 会让 Android init 挂在启动早期
 - **需要 Magisk + PIF 才彻底**：但 Bliss 16 没有 Android boot.img，ramdisk 是 Linux initramfs，没法直接用 magiskboot patch
-- **web 版完全绕过检测**：Chrome 没 emulator check，uiautomator 抓 DOM 节点一样有效
+- **CDP + DOM 完全绕过**：Chrome 作为 headless renderer 直接读渲染后的文字，app-level emulator detection 无关
 
-所以结论：**除非 App 独有功能（如充值），否则全部走网页 + ADB uiautomator dump**。中国电信是例外（Android 13 + user build 它不检测就让登）。
+所以结论：**全部走网页 + CDP Runtime.evaluate**。App 路线仅在某些功能（充值、客服）时偶尔需要 uiautomator dump 兜底。
 
 ## ZFS 快照保护
 
