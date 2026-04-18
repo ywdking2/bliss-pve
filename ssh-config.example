@@ -1,0 +1,10 @@
+# 加到 ~/.ssh/config（端口/IP/用户名按实际情况调）
+# Termux 用户名是 `whoami` 输出，每次安装随机（u0_aXXX）
+
+Host bliss-pve
+  HostName 192.168.100.198
+  User u0_a282
+  Port 8022
+  IdentityFile ~/.ssh/id_ed25519_bliss
+  ProxyJump istoreos-ts
+  StrictHostKeyChecking accept-new

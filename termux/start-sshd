@@ -1,0 +1,5 @@
+#!/data/data/com.termux/files/usr/bin/sh
+# 放到 Bliss VM 内 ~/.termux/boot/start-sshd 并 chmod +x
+# 需要先装 Termux:Boot APK 并打开一次激活 BOOT_COMPLETED
+termux-wake-lock
+sshd
