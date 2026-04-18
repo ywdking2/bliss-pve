@@ -93,9 +93,54 @@ ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519_bliss -N ''
 
 四个运营商 App 都需要 SMS 验证码（手机号注册），需要把"接收码的真机"放手边手动转码。
 
-## 自动化思路（待实施）
+## 用量查询脚本（已实施）
 
-`adb shell uiautomator dump` 拉 UI 树 + grep 文本能抓余量字段。或者用 AutoX.js / Tasker 写定时任务，把每天的余量数字推到企业微信/邮件。
+四家运营商通过 ADB + uiautomator dump 一条命令查：
+
+```bash
+./scripts/bliss-usage.sh         # 汇总 4 家
+./scripts/fi-usage.sh            # Google Fi (web)
+./scripts/cmhk-usage.sh          # CMHK 中國移動香港 (web)
+./scripts/cmcc-usage.sh          # 中国移动 shop.10086.cn (web)
+./scripts/ct-usage.sh            # 中国电信 App com.ct.client
+```
+
+**先决条件**：Bliss VM 内 Chrome 已登录各家网页（CMHK/CMCC/Fi）、中国电信 App 已登录。登录 session 存 Chrome cookie 里，不会过期（除非运营商主动踢 session）。
+
+输出示例：
+
+```
+Google Fi
+  数据用量: 0 GB
+  Alert 阈值: 3 GB
+  Cycle ends 27 days
+  当前账单: $88.77
+
+CMHK (中國移動香港)
+  總用量: 15.15/100.00GB  (餘: 84.85GB)
+  本號已用: 6.89 GB
+
+中国移动
+  套餐: 全家享套餐（全国版）199档
+  流量: 已用 44.11 GB / 155.40 GB  (剩 111.29 GB, 72%)
+  通话: 剩 382 / 600 分钟 (64%)
+
+中国电信
+  剩余流量: 178.89GB
+  剩余语音: 2097分钟
+  宽带速率: 2000Mbps
+```
+
+### 为什么不走 App 伪装 emulator detection
+
+尝试过改 build.prop + PVE SMBIOS 伪装成 Samsung 设备。结论：
+
+- **能改的**：DMI (sys_vendor/product_name 通过 PVE `--smbios1 manufacturer=... base64=1`)、build.prop 部分字段
+- **改坏了**：直接 append `ro.hardware` 等 override 到 `/system/build.prop` 会让 Android init 挂在启动早期
+- **需要 Magisk + PIF 才彻底**：但 Bliss 16 没有 Android boot.img，ramdisk 是 Linux initramfs，没法直接用 magiskboot patch
+- **web 版完全绕过检测**：Chrome 没 emulator check，uiautomator 抓 DOM 节点一样有效
+
+所以结论：**除非 App 独有功能（如充值），否则全部走网页 + ADB uiautomator dump**。中国电信是例外（Android 13 + user build 它不检测就让登）。
 
 ## ZFS 快照保护
 
