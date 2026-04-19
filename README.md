@@ -136,7 +136,23 @@ curl http://localhost:9222/json/version # Chrome 版本信息
 - `https://www.hk.chinamobile.com/tc/home/my-zone/menu/usage-query`
 - `https://shop.10086.cn/i/`
 
-Bliss Chrome profile 持久化 cookie，VM 重启后自动保留。Session 过期时 DOM 变回登录页，前端标记 `error: session_expired`，在 VNC 里打开对应 tab 重扫码即可。
+Bliss Chrome profile 持久化 cookie，VM 重启后自动保留。Session 过期时：
+- **CMHK** 已实现 CDP 自动重登（账号 + 密码 + ddddocr 识别 4 位数字 captcha），见 invest-review `backend/api/sim_monitor.py::_ensure_cmhk_login`
+- **CMCC** 没自动登录（shop.10086.cn 登录走 SMS），但有 dmit-lax SMS 每日备用源覆盖
+- **Fi** 寿命 30 天+，过期就在 noVNC 里登一次
+
+### CMHK 登录页 DOM selectors（自动化用得到）
+
+| 元素 | Selector | 备注 |
+|---|---|---|
+| 账号输入框 | `#img_home_001` | placeholder "手機號碼或客戶號碼" |
+| 密码输入框 | `#input_login_001` | placeholder "請輸入登錄密碼" |
+| 登入按钮 | `#img_home_003` | 真实鼠标 `Input.dispatchMouseEvent` 触发，`el.click()` 在 SPA 里失效 |
+| 验证码图 | `#img_home_002` | class `verification-code_image`，160x48，src 是 blob URL（必须 canvas drawImage 取字节） |
+| 验证码输入框 | `#input_login_002` | placeholder "驗證碼"，弹出后才存在 |
+| 換一張按钮 | `.vali-code_change_text` | 识别错时点这个刷新 |
+
+填值要用 `Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set` + dispatch input/change，否则 Vue v-model 不响应。
 
 ### 锁横屏（防 App 强制 portrait 撑出竖屏）
 
